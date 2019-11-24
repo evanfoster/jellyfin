@@ -29,12 +29,13 @@ FROM multiarch/qemu-user-static:x86_64-aarch64 as qemu
 FROM mcr.microsoft.com/dotnet/core/runtime:${DOTNET_VERSION}-stretch-slim-arm64v8
 COPY --from=qemu /usr/bin/qemu-aarch64-static /usr/bin
 RUN apt-get update \
- && apt-get install --no-install-recommends --no-install-suggests -y ffmpeg \
+ && apt-get install --no-install-recommends --no-install-suggests -y ffmpeg xz-utils \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /cache /config /media \
  && chmod 777 /cache /config /media
 COPY --from=builder /jellyfin /jellyfin
 COPY --from=web-builder /dist /jellyfin/jellyfin-web
+RUN curl https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz | tar xJ --strip 1 -C / && chown root:root /ffmpeg
 
 EXPOSE 8096
 VOLUME /cache /config /media
