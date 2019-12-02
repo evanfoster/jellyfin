@@ -8,14 +8,20 @@ ARG JELLYFIN_WEB_VERSION=v10.4.2
 RUN apk add curl \
  && curl -L https://github.com/jellyfin/jellyfin-web/archive/${JELLYFIN_WEB_VERSION}.tar.gz | tar zxf - \
  && cd jellyfin-web-* \
+ && echo 'network-timeout 600000' > .yarnrc \
  && yarn install \
  && yarn build \
  && mv dist /dist
 
+FROM mcr.microsoft.com/dotnet/core/sdk:${DOTNET_VERSION} as copier
+WORKDIR /copy
+COPY . .
+RUN rm -r client
+
 
 FROM mcr.microsoft.com/dotnet/core/sdk:${DOTNET_VERSION} as builder
+COPY --from=copier /copy /repo
 WORKDIR /repo
-COPY . .
 ENV DOTNET_CLI_TELEMETRY_OPTOUT=1
 # TODO Remove or update the sed line when we update dotnet version.
 RUN find . -type f -exec sed -i 's/netcoreapp2.1/netcoreapp3.0/g' {} \;
@@ -25,8 +31,16 @@ RUN find . -type d -name obj | xargs -r rm -r
 RUN dotnet publish Jellyfin.Server --configuration Release --output="/jellyfin" --self-contained --runtime linux-arm64 "-p:GenerateDocumentationFile=false;DebugSymbols=false;DebugType=none"
 
 
+FROM mcr.microsoft.com/dotnet/core/runtime:${DOTNET_VERSION}-buster-slim-arm64v8 as python-builder
+WORKDIR /build
+RUN apt update && apt install -y python3 python3-venv python3-dev libffi-dev build-essential
+RUN python3 -m venv venv
+COPY client/requirements.txt .
+RUN venv/bin/pip install -r requirements.txt
+
+
 FROM multiarch/qemu-user-static:x86_64-aarch64 as qemu
-FROM mcr.microsoft.com/dotnet/core/runtime:${DOTNET_VERSION}-stretch-slim-arm64v8
+FROM mcr.microsoft.com/dotnet/core/runtime:${DOTNET_VERSION}-buster-slim-arm64v8
 COPY --from=qemu /usr/bin/qemu-aarch64-static /usr/bin
 RUN apt-get update \
  && apt-get install --no-install-recommends --no-install-suggests -y ffmpeg xz-utils \
@@ -35,11 +49,17 @@ RUN apt-get update \
  && chmod 777 /cache /config /media
 COPY --from=builder /jellyfin /jellyfin
 COPY --from=web-builder /dist /jellyfin/jellyfin-web
-RUN curl https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz | tar xJ --strip 1 -C / && chown root:root /ffmpeg
+#RUN curl https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz | tar xJ --strip 1 -C / && chown root:root /ffmpeg
+COPY --from=python-builder /build/venv /venv
+RUN apt update \
+ && apt install -y python3 
+COPY client/ffmpeg /ffmpeg
+RUN chmod +x /ffmpeg
+COPY client/ffmpeg.py /ffmpeg.py
 
 EXPOSE 8096
 VOLUME /cache /config /media
 ENTRYPOINT dotnet /jellyfin/jellyfin.dll \
     --datadir /config \
     --cachedir /cache \
-    --ffmpeg /usr/bin/ffmpeg
+    --ffmpeg /ffmpeg
